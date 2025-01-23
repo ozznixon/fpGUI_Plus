@@ -16,7 +16,12 @@
 
 unit fpg_main;
 
-{$I fpg_defines.inc}
+{$mode objfpc}{$H+}
+
+{.$Define DEBUG}
+
+// To enable the AggPas powered Canvas
+{.$define AGGCanvas}
 
 { TODO : Implement font size adjustments for each platform. eg: linux=10pt & windows=8pt }
 
@@ -44,7 +49,7 @@ type
     btfIsSelected, btfHasFocus, btfHasParentColor, btfFlat, btfHover, btfDisabled);
 
   TfpgMenuItemFlags = set of (mifSelected, mifHasFocus, mifSeparator,
-    mifEnabled, mifChecked, mifSubMenu, mifHeader);
+    mifEnabled, mifChecked, mifSubMenu);
 
   TfpgTextFlags = set of (txtLeft, txtHCenter, txtRight, txtTop, txtVCenter,
     txtBottom, txtWrap, txtDisabled, txtAutoSize);
@@ -56,7 +61,6 @@ type
 const
   AllAnchors = [anLeft, anRight, anTop, anBottom];
   TextFlagsDflt = [txtLeft, txtTop];
-
 
 type
   { *******************************************
@@ -76,11 +80,10 @@ type
   TKeyPressEvent = procedure(Sender: TObject; var KeyCode: word; var ShiftState: TShiftState; var Consumed: boolean) of object;
   { Mouse }
   TMouseButtonEvent = procedure(Sender: TObject; AButton: TMouseButton; AShift: TShiftState; const AMousePos: TPoint) of object;
-  TMouseButtonMultiClickEvent = procedure(Sender: TObject; AButton: TMouseButton; AShift: TShiftState; const AMousePos: TPoint; const AClickCount: Integer) of object;
   TMouseMoveEvent = procedure(Sender: TObject; AShift: TShiftState; const AMousePos: TPoint) of object;
   TMouseWheelEvent = procedure(Sender: TObject; AShift: TShiftState; AWheelDelta: Single; const AMousePos: TPoint) of object;
   { Painting }
-  TPaintEvent = procedure(Sender: TObject) of object;
+  TPaintEvent = procedure(Sender: TObject{; const ARect: TfpgRect}) of object;
   { Exceptions }
   TExceptionEvent = procedure(Sender: TObject; E: Exception) of object;
 
@@ -91,14 +94,6 @@ type
     max_width: TfpgCoord;
     min_height: TfpgCoord;
     max_height: TfpgCoord;
-  end;
-
-
-  TfpgStyleDrawTab = record
-    TabSheet: TObject;
-    TabPosition: TfpgTabPosition;
-    TabRect: TfpgRect;
-    IsSelected: boolean;
   end;
 
 
@@ -124,12 +119,19 @@ type
   // forward declaration
   TfpgCanvas = class;
   TfpgTimer = class;
-  TfpgDrag = class;
 
 
-  TfpgNativeWindow = class(TfpgWindowImpl)
+  TfpgWindow = class(TfpgWindowImpl)
+  protected
+    procedure   SetParent(const AValue: TfpgWindow); reintroduce;
+    function    GetParent: TfpgWindow; reintroduce;
+    function    GetCanvas: TfpgCanvas; reintroduce;
+    function    CreateCanvas: TfpgCanvasBase; virtual;
   public
     constructor Create(AOwner: TComponent); override;
+    destructor  Destroy; override;
+    property    Parent: TfpgWindow read GetParent write SetParent;
+    property    Canvas: TfpgCanvas read GetCanvas;
     property    WinHandle;  // surface this property from TfpgXXXImpl class in it's native format
   end;
 
@@ -165,7 +167,7 @@ type
   private
     function    AddLineBreaks(const s: TfpgString; aMaxLineWidth: integer): string;
   public
-    constructor Create(awidget: TfpgWidgetBase); override;
+    constructor Create(awin: TfpgWindowBase); override;
     destructor  Destroy; override;
 
     // As soon as TfpgStyle has moved out of CoreLib, these must go!
@@ -179,30 +181,25 @@ type
     function    DrawText(x, y, w, h: TfpgCoord; const AText: TfpgString; AFlags: TfpgTextFlags = TextFlagsDflt; ALineSpace: integer = 2): integer; overload;
     function    DrawText(x, y: TfpgCoord; const AText: TfpgString; AFlags: TfpgTextFlags = TextFlagsDflt; ALineSpace: integer = 2): integer; overload;
     function    DrawText(r: TfpgRect; const AText: TfpgString; AFlags: TfpgTextFlags = TextFlagsDflt; ALineSpace: integer = 2): integer; overload;
+    property    Window: TfpgWindowBase read FWindow;
   end;
 
 
   { This is very basic for now, just to remind us of theming support. Later we
     will rework this to use a Style Manager like the previous fpGUI.
     Also support Bitmap based styles for easier theme implementations. }
-
   TfpgStyle = class(TObject)
-  private
-    FMenuHeaderFont: TfpgFont;
-    procedure SetMenuHeaderFont(AValue: TfpgFont);
   protected
     FDefaultFont: TfpgFont;
     FFixedFont: TfpgFont;
     FMenuAccelFont: TfpgFont;
     FMenuDisabledFont: TfpgFont;
     FMenuFont: TfpgFont;
-    FTabFont: TfpgFont;
     procedure   SetDefaultFont(AValue: TfpgFont);
     procedure   SetFixedFont(AValue: TfpgFont);
     procedure   SetMenuAccelFont(AValue: TfpgFont);
     procedure   SetMenuDisabledFont(AValue: TfpgFont);
     procedure   SetMenuFont(AValue: TfpgFont);
-    procedure   SetTabFont(AValue: TfpgFont);
   public
     constructor Create; virtual;
     destructor  Destroy; override;
@@ -210,10 +207,8 @@ type
     property    DefaultFont: TfpgFont read FDefaultFont write SetDefaultFont;
     property    FixedFont: TfpgFont read FFixedFont write SetFixedFont;
     property    MenuFont: TfpgFont read FMenuFont write SetMenuFont;
-    property    MenuHeaderFont: TfpgFont read FMenuHeaderFont write SetMenuHeaderFont;
     property    MenuAccelFont: TfpgFont read FMenuAccelFont write SetMenuAccelFont;
     property    MenuDisabledFont: TfpgFont read FMenuDisabledFont write SetMenuDisabledFont;
-    property    TabFont: TfpgFont read FTabFont write SetTabFont;
     { General }
     procedure   DrawControlFrame(ACanvas: TfpgCanvas; x, y, w, h: TfpgCoord); virtual; overload;
     procedure   DrawControlFrame(ACanvas: TfpgCanvas; r: TfpgRect); overload;
@@ -238,21 +233,12 @@ type
     function    GetSeparatorSize: integer; virtual;
     { Editbox }
     procedure   DrawEditBox(ACanvas: TfpgCanvas; const r: TfpgRect; const IsEnabled: Boolean; const IsReadOnly: Boolean; const ABackgroundColor: TfpgColor); virtual;
-    procedure   DrawPlaceholderText(ACanvas: TfpgCanvas; const r: TfpgRect; constref AText: TfpgString); virtual;
     { Combobox }
     procedure   DrawStaticComboBox(ACanvas: TfpgCanvas; r: TfpgRect; const IsEnabled: Boolean; const IsFocused: Boolean; const IsReadOnly: Boolean; const ABackgroundColor: TfpgColor; const AInternalBtnRect: TfpgRect; const ABtnPressed: Boolean); virtual;
     procedure   DrawInternalComboBoxButton(ACanvas: TfpgCanvas; r: TfpgRect; const IsEnabled: Boolean; const IsPressed: Boolean); virtual;
     { Checkbox }
     function    GetCheckBoxSize: integer; virtual;
     procedure   DrawCheckbox(ACanvas: TfpgCanvas; x, y: TfpgCoord; ix, iy: TfpgCoord); virtual;
-    { PageControl & Tabs }
-    function    GetTabBorders: TRect; virtual;
-    function    GetDefaultTabHeight: TfpgCoord; virtual;
-    procedure   DrawTabBackground(ACanvas: TfpgCanvas; ABGColor: TfpgColor); virtual;
-    procedure   DrawPageControlTab(ACanvas: TfpgCanvas; AParams: TfpgStyleDrawTab); virtual;
-    { Listbox }
-    procedure   DrawListBox(ACanvas: TfpgCanvas; const r: TfpgRect; const IsEnabled: Boolean; const IsReadOnly: Boolean; const ABackgroundColor: TfpgColor); virtual;
-    procedure   DrawListBoxItem(ACanvas: TfpgCanvas; r: TfpgRect; const IsFocusedItem: Boolean; const HasFocus: Boolean); virtual;
   end;
 
 
@@ -269,9 +255,9 @@ type
     FShowHint: boolean;
     FOnException: TExceptionEvent;
     FStopOnException: Boolean;
-    FHintWindow: TfpgWidgetBase;
+    FHintWindow: TfpgWindow;
     FHintTimer: TfpgTimer;
-    FHintWidget: TfpgWidgetBase;
+    FHintWidget: TfpgWindow;
     FHintPos: TPoint;
     FOnKeyPress: TKeyPressEvent;
     FStartDragDistance: integer;
@@ -307,10 +293,9 @@ type
     procedure   Run;
     procedure   SetMessageHook(AWidget: TObject; const AMsgCode: integer; AListener: TObject);
     procedure   ShowException(E: Exception);
-    procedure   ShowBacktrace(sender: TObject; E: Exception);
     procedure   UnsetMessageHook(AWidget: TObject; const AMsgCode: integer; AListener: TObject);
     property    HintPause: Integer read FHintPause write SetHintPause;
-    property    HintWindow: TfpgWidgetBase read FHintWindow;
+    property    HintWindow: TfpgWindow read FHintWindow;
     property    ScreenWidth: integer read FScreenWidth;
     property    ScreenHeight: integer read FScreenHeight;
     property    ShowHint: boolean read FShowHint write SetShowHint default True;
@@ -345,11 +330,9 @@ type
   public
     constructor Create;
     destructor  Destroy; override;
-    procedure   SetCaret(ACanvas: TfpgCanvas; x, y, w, h: TfpgCoord);
-    procedure   UnSetCaret(ACanvas: TfpgCanvas);
+    procedure   SetCaret(acanvas: TfpgCanvas; x, y, w, h: TfpgCoord);
+    procedure   UnSetCaret(acanvas: TfpgCanvas);
     procedure   InvertCaret;
-    procedure   ResetTimeout;
-    function    IsVisible(acanvas: TfpgCanvas): Boolean;
     property    Width: integer read FWidth;
     property    Height: integer read FHeight;
   end;
@@ -367,68 +350,18 @@ type
   end;
 
 
-  TfpgDragPaintEvent = procedure(ASender: TfpgDrag; ACanvas: TfpgCanvas) of object;
-
-
   TfpgDrag = class(TfpgDragImpl)
   private
-    FOnPaintPreview: TfpgDragPaintEvent;
-    FPreviewSize: TfpgSize;
     FTarget: TfpgWinHandle;
     procedure   SetMimeData(const AValue: TfpgMimeDataBase);
-    procedure   MsgMouseMove(var msg: TfpgMessageRec); message FPGM_MOUSEMOVE;
   protected
-    FPreviewWin: TfpgWidgetBase; // TfpgDNDWindow
-    procedure   DoOnPaintPreview(ACanvas: TfpgCanvas);
+    function    GetSource: TfpgWindow; reintroduce;
   public
-    constructor Create(ASource: TfpgWidgetBase);
-    destructor  Destroy; override;
+    constructor Create(ASource: TfpgWindow);
     function    Execute(const ADropActions: TfpgDropActions = [daCopy]; const ADefaultAction: TfpgDropAction = daCopy): TfpgDropAction; override;
-    property    Source: TfpgWidgetBase read GetSource;
+    property    Source: TfpgWindow read GetSource;
     property    Target: TfpgWinHandle read FTarget write FTarget;
     property    MimeData: TfpgMimeDataBase read FMimeData write SetMimeData;
-    property    PreviewSize: TfpgSize read FPreviewSize write FPreviewSize;
-    property    OnPaintPreview: TfpgDragPaintEvent read FOnPaintPreview write FOnPaintPreview;
-  end;
-
-
-  TfpgDrop = class(TfpgDropImpl)
-  public
-    function AcceptMimeType(const ACompatibleFormat: array of TfpgString): Boolean;
-  end;
-
-
-  TfpgDropCommonEvent = procedure(Drop: TfpgDrop) of object;
-  TfpgDropDropEvent = procedure(Drop: TfpgDrop; AData: Variant) of object;
-  TfpgDropMoveEvent = procedure(Drop: TfpgDrop; X, Y: TfpgCoord) of object;
-
-
-  TfpgDropHandler = class(TObject)
-  protected
-    procedure   Enter(ADrop: TfpgDrop); virtual; abstract;
-    procedure   Leave(ADrop: TfpgDrop); virtual; abstract;
-    procedure   Move(ADrop: TfpgDrop; AX, AY: Integer); virtual; abstract;
-    procedure   Drop(ADrop: TfpgDrop; AData: Variant); virtual; abstract;
-  end;
-
-
-  TfpgDropEventHandler = class(TfpgDropHandler)
-  private
-    FOnDrop:  TfpgDropDropEvent;
-    FOnEnter: TfpgDropCommonEvent;
-    FOnLeave: TfpgDropCommonEvent;
-    FOnMove:  TfpgDropMoveEvent;
-  protected
-    procedure   Enter(ADrop: TfpgDrop); override;
-    procedure   Leave(ADrop: TfpgDrop); override;
-    procedure   Move(ADrop: TfpgDrop; AX, AY: Integer); override;
-    procedure   Drop(ADrop: TfpgDrop; AData: Variant); override;
-  public
-    constructor Create(AOnEnter, AOnLeave: TfpgDropCommonEvent; AOnDrop:TfpgDropDropEvent; AOnMove: TfpgDropMoveEvent);
-    property    OnEnter: TfpgDropCommonEvent read FOnEnter write FOnEnter;
-    property    OnLeave: TfpgDropCommonEvent read FOnLeave write FOnLeave;
-    property    OnDrop: TfpgDropDropEvent read FOnDrop write FOnDrop;
-    property    OnMove: TfpgDropMoveEvent read FOnMove write FOnMove;
   end;
 
 
@@ -452,15 +385,10 @@ procedure fpgPostMessage(Sender, Dest: TObject; MsgCode: integer; var aparams: T
 procedure fpgPostMessage(Sender, Dest: TObject; MsgCode: integer); overload;
 procedure fpgSendMessage(Sender, Dest: TObject; MsgCode: integer; var aparams: TfpgMessageParams); overload;
 procedure fpgSendMessage(Sender, Dest: TObject; MsgCode: integer); overload;
-function  fpgPeekMessage(Dest: TObject; MsgCode: integer; Msg: PfpgMessageRec = nil): Boolean;
 procedure fpgDeliverMessage(var msg: TfpgMessageRec);
 procedure fpgDeliverMessages;
 function  fpgGetFirstMessage: PfpgMessageRec;
 procedure fpgDeleteFirstMessage;
-
-{ if MsgCode is -1 then all messages for the object will be deleted. otherwise
-  only messages matching MsgCode will be removed }
-procedure fpgDeleteMessagesForTarget(Dest: TObject; MsgCode: integer = -1);
 
 // Color & Font routines
 function  fpgColorToRGB(col: TfpgColor): TfpgColor;
@@ -480,18 +408,18 @@ function  fpgGetTickCount: DWord;
 procedure fpgPause(MilliSeconds: Cardinal);
 
 // Rectangle, Point & Size routines
-function  CopyRect(out Dest: TfpgRect; const Src: TfpgRect): Boolean; deprecated 'Use TfpgRect.CopyRect() instead.';
+function  CopyRect(out Dest: TfpgRect; const Src: TfpgRect): Boolean;
 function  InflateRect(var Rect: TRect; dx: Integer; dy: Integer): Boolean;
-function  InflateRect(var Rect: TfpgRect; dx: Integer; dy: Integer): Boolean; deprecated 'Use TfpgRect.InflateRect() instead.';
-function  IntersectRect(out ARect: TfpgRect; const r1, r2: TfpgRect): Boolean; deprecated 'Use TfpgRect.IntersectRect() instead.';
-function  IsRectEmpty(const ARect: TfpgRect): Boolean; deprecated 'Use TfpgRect.IsRectEmpty() instead.';
+function  InflateRect(var Rect: TfpgRect; dx: Integer; dy: Integer): Boolean;
+function  IntersectRect(out ARect: TfpgRect; const r1, r2: TfpgRect): Boolean;
+function  IsRectEmpty(const ARect: TfpgRect): Boolean;
 function  OffsetRect(var Rect: TRect; dx: Integer; dy: Integer): Boolean;
-function  OffsetRect(var Rect: TfpgRect; dx: Integer; dy: Integer): Boolean; deprecated 'Use TfpgRect.OffsetRect() instead.';
-function  PtInRect(const ARect: TfpgRect; const APoint: TPoint): Boolean; deprecated 'Use TfpgRect.PointInRect() instead.';
-function  UnionRect(out ARect: TfpgRect; const R1, R2: TfpgRect): Boolean; deprecated 'Use TfpgRect.UnionRect() instead.';
+function  OffsetRect(var Rect: TfpgRect; dx: Integer; dy: Integer): Boolean;
+function  PtInRect(const ARect: TfpgRect; const APoint: TPoint): Boolean;
+function  UniongRect(out ARect: TfpgRect; const R1, R2: TfpgRect): Boolean;
 function  CenterPoint(const Rect: TRect): TPoint;
-function  CenterPoint(const Rect: TfpgRect): TPoint; deprecated 'Use TfpgRect.CenterPoint() instead.';
-function  fpgRect(ALeft, ATop, AWidth, AHeight: integer): TfpgRect; deprecated 'Use TfpgRect.SetRect() instead.';
+function  CenterPoint(const Rect: TfpgRect): TPoint;
+function  fpgRect(ALeft, ATop, AWidth, AHeight: integer): TfpgRect;
 function  fpgRectToRect(const ARect: TfpgRect): TRect;
 function  fpgPoint(const AX, AY: integer): TfpgPoint;
 function  fpgSize(const AWidth, AHeight: integer): TfpgSize;
@@ -500,7 +428,6 @@ function  fpgSize(const AWidth, AHeight: integer): TfpgSize;
 procedure PrintRect(const Rect: TRect);
 procedure PrintRect(const Rect: TfpgRect);
 procedure PrintCoord(const x, y: TfpgCoord);
-procedure PrintSize(const ASize: TfpgSize);
 procedure PrintCoord(const pt: TPoint);
 function  PrintCallTrace(const AClassName, AMethodName: string): IInterface;
 procedure PrintCallTraceDbgLn(const AMessage: string);
@@ -508,13 +435,11 @@ procedure DumpStack;
 procedure DumpStack(var AList: TStrings);
 
 { These methods are safe to use even on Windows gui applications. }
-procedure DebugWrite(const s1: TfpgString);
 procedure DebugLn(const s1: TfpgString);
 procedure DebugLn(const s1, s2: TfpgString);
 procedure DebugLn(const s1, s2, s3: TfpgString);
 procedure DebugLn(const s1, s2, s3, s4: TfpgString);
 procedure DebugLn(const s1, s2, s3, s4, s5: TfpgString);
-procedure DebugLnFmt(const Msg: string; const Args: array of const);
 function  DebugMethodEnter(const s1: TfpgString): IInterface;
 procedure DebugSeparator;
 
@@ -551,7 +476,7 @@ uses
 {$ifdef AGGCanvas}
   Agg2D,
 {$endif}
-{$IFDEF GDEBUG}
+{$IFDEF DEBUG}
   fpg_dbugintf,
 {$ENDIF}
   fpg_imgfmt_bmp,
@@ -564,13 +489,11 @@ uses
   fpg_utils,
   fpg_cmdlineparams,
   fpg_imgutils,
-  fpg_dnd_window,
   fpg_stylemanager,
   fpg_style_win2k,   // TODO: This needs to be removed!
   fpg_style_motif,   // TODO: This needs to be removed!
   fpg_style_carbon,
-  fpg_style_plastic,
-  fpg_tab;
+  fpg_style_plastic;
 
 var
   fpgTimers: TList;
@@ -603,58 +526,6 @@ type
 
 
   TWidgetFriend = class(TfpgWidget);
-
-{ TfpgDrop }
-
-function TfpgDrop.AcceptMimeType(const ACompatibleFormat: array of TfpgString
-  ): Boolean;
-var
-  MimeType: TfpgMimeDataItem;
-begin
-  Result := False;
-  for MimeType in Mimetypes do
-  begin
-    if MimeType.format in ACompatibleFormat then
-    begin
-      Result := True;
-      MimeChoice := MimeType.format;
-    end;
-  end;
-end;
-
-{ TfpgDropEventHandler }
-
-procedure TfpgDropEventHandler.Enter(ADrop: TfpgDrop);
-begin
-  if Assigned(FOnEnter) then
-    FOnEnter(ADrop);
-end;
-
-procedure TfpgDropEventHandler.Leave(ADrop: TfpgDrop);
-begin
-  if Assigned(FOnLeave) then
-    FOnLeave(ADrop);
-end;
-
-procedure TfpgDropEventHandler.Move(ADrop: TfpgDrop; AX, AY: Integer);
-begin
-  if Assigned(FOnMove) then
-    FOnMove(ADrop, AX, AY);
-end;
-
-procedure TfpgDropEventHandler.Drop(ADrop: TfpgDrop; AData: Variant);
-begin
-  if Assigned(FOnDrop) then
-    FOnDrop(ADrop, AData);
-end;
-
-constructor TfpgDropEventHandler.Create(AOnEnter, AOnLeave: TfpgDropCommonEvent; AOnDrop: TfpgDropDropEvent; AOnMove: TfpgDropMoveEvent);
-begin
-  FOnEnter := AOnEnter;
-  FOnLeave := AOnLeave;
-  FOnMove  := AOnMove;
-  FOnDrop  := AOnDrop;
-end;
 
 
 { TDebugMethodHelper }
@@ -732,7 +603,7 @@ begin
   if fpgTimers = nil then
     Exit;
   // returns -1 if no timers are pending
-  dt := ctime + amaxtime * ONE_MILLISEC;
+  dt := ctime + amaxtime * ONE_MILISEC;
   tb := False;
 
   for i := 0 to fpgTimers.Count-1 do
@@ -747,7 +618,7 @@ begin
 
   if tb then
   begin
-    Result := trunc(0.5 + (dt - ctime) / ONE_MILLISEC);
+    Result := trunc(0.5 + (dt - ctime) / ONE_MILISEC);
     if Result < 0 then
       Result := 0;
   end
@@ -774,7 +645,7 @@ end;
 function CopyRect(out Dest: TfpgRect; const Src: TfpgRect): Boolean;
 begin
   Dest := Src;
-  if Dest.IsRectEmpty then
+  if IsRectEmpty(Dest) then
   begin
     FillChar(Dest, SizeOf(Dest), 0);
     Result := false;
@@ -815,25 +686,27 @@ begin
 end;
 
 function IntersectRect(out ARect: TfpgRect; const r1, r2: TfpgRect): Boolean;
-var
-  TmpRect: TfpgRect; // use tmp to avoid changing r1 if ARect and r1 are the same var
 begin
-  TmpRect := r1;
-  TmpRect.Left:=Max(R1.Left, R2.Left);
-  TmpRect.Top:=Max(R1.Top, R2.Top);
-  TmpRect.SetBottom(Min(R1.Bottom, R2.Bottom));
-  TmpRect.SetRight(Min(R1.Right, R2.Right));
+  ARect := r1;
+  with r2 do
+  begin
+    if Left > r1.Left then
+      ARect.Left := Left;
+    if Top > r1.Top then
+      ARect.Top := Top;
+    if Right < r1.Right then
+      ARect.Width := ARect.Left + Right;
+    if Bottom < r1.Bottom then
+      ARect.Height := ARect.Top + Bottom;
+  end;
 
-  if TmpRect.IsRectEmpty then
+  if IsRectEmpty(ARect) then
   begin
     FillChar(ARect, SizeOf(ARect), 0);
     Result := false;
   end
   else
-  begin
-    ARect := TmpRect;
     Result := true;
-  end;
 end;
 
 function IsRectEmpty(const ARect: TfpgRect): Boolean;
@@ -881,27 +754,28 @@ begin
             (APoint.y <= ARect.Bottom);
 end;
 
-function UnionRect(out ARect: TfpgRect; const R1, R2: TfpgRect): Boolean;
-var
-  TmpRect: TfpgRect;
+function UniongRect(out ARect: TfpgRect; const R1, R2: TfpgRect): Boolean;
 begin
-  TmpRect := R1;
+  ARect := R1;
+  with R2 do
+  begin
+    if Left < R1.Left then
+      ARect.Left := Left;
+    if Top < R1.Top then
+      ARect.Top := Top;
+    if Right > R1.Right then
+      ARect.Width := ARect.Left + Right;
+    if Bottom > R1.Bottom then
+      ARect.Height := ARect.Top + Bottom;
+  end;
 
-  TmpRect.Left:=Min(R1.Left,R2.Left);
-  TmpRect.Top :=Min(R1.Top, R2.Top);
-  TmpRect.SetBottom(Max(R1.Bottom, R2.Bottom));
-  TmpRect.SetRight (Max(R1.Right, R2.Right));
-
-  if TmpRect.IsRectEmpty then
+  if IsRectEmpty(ARect) then
   begin
     FillChar(ARect, SizeOf(ARect), 0);
     Result := false;
   end
   else
-  begin
     Result := true;
-    ARect := TmpRect;
-  end;
 end;
 
 function CenterPoint(const Rect: TRect): TPoint;
@@ -1011,17 +885,19 @@ end;
 
 procedure PrintRect(const Rect: TRect);
 begin
-  DebugLn(Format('Rect left=%d top=%d right=%d bottom=%d', [Rect.Left, Rect.Top, Rect.Right, Rect.Bottom]));
+  writeln('Rect left=', Rect.Left, ' top=', Rect.Top, ' right=', Rect.Right,
+      ' bottom=', Rect.Bottom);
 end;
 
 procedure PrintRect(const Rect: TfpgRect);
 begin
-  DebugLn(Rect.ToString);
+  writeln('Rect left=', Rect.Left, ' top=', Rect.Top, ' right=', Rect.Right,
+      ' bottom=', Rect.Bottom, ' width=', Rect.Width, ' height=', Rect.Height);
 end;
 
 procedure PrintCoord(const x, y: TfpgCoord);
 begin
-  DebugLn(Format('x=%d, y=%d', [x, y]));
+  writeln('x=', x, '  y=', y);
 end;
 
 var
@@ -1051,23 +927,18 @@ begin
     spacing += '  ';
   FClassName := AClassName;
   FMethodName := AMethodName;
-  {$IFDEF GDEBUG}
+  {$IFDEF DEBUG}
   SendDebug(Format('%s>> %s.%s', [spacing, FClassName, FMethodName]));
   {$ENDIF}
 end;
 
 destructor TPrintCallTrace.Destroy;
 begin
-  {$IFDEF GDEBUG}
+  {$IFDEF DEBUG}
   SendDebug(Format('%s<< %s.%s', [spacing, FClassName, FMethodName]));
   {$ENDIF}
   dec(iCallTrace);
   inherited Destroy;
-end;
-
-procedure PrintSize(const ASize: TfpgSize);
-begin
-  DebugLn(Format('w=%d  h=%d', [ASize.W, ASize.H]));
 end;
 
 procedure PrintCoord(const pt: TPoint);
@@ -1096,22 +967,24 @@ var
   lMessage: String;
   i: longint;
 begin
-  Writeln(stdout, ' Stack trace:');
-  Writeln(stdout, 'An unhandled exception occurred at $', HexStr(Ptrint(ExceptAddr), sizeof(PtrInt)*2),' :');
+  writeln(' Stack trace:');
+//  Dump_Stack(StdOut, get_frame);
+
+  Writeln(stdout,'An unhandled exception occurred at $',HexStr(Ptrint(ExceptAddr),sizeof(PtrInt)*2),' :');
   if ExceptObject is Exception then
-  begin
-    lMessage := Exception(ExceptObject).ClassName + ' : ' + Exception(ExceptObject).Message;
-    Writeln(stdout, lMessage);
-  end
+   begin
+     lMessage := Exception(ExceptObject).ClassName+' : '+Exception(ExceptObject).Message;
+     Writeln(stdout,lMessage);
+   end
   else
-    Writeln(stdout, 'Exception object ', ExceptObject.ClassName, ' is not of class Exception.');
-  Writeln(stdout, BackTraceStrFunc(ExceptAddr));
-  if (ExceptFrameCount > 0) then
-  begin
-    for i := 0 to ExceptFrameCount-1 do
-      Writeln(stdout, BackTraceStrFunc(ExceptFrames[i]));
-  end;
-  Writeln(stdout, '');
+   Writeln(stdout,'Exception object ',ExceptObject.ClassName,' is not of class Exception.');
+  Writeln(stdout,BackTraceStrFunc(ExceptAddr));
+  if (ExceptFrameCount>0) then
+    begin
+      for i := 0 to ExceptFrameCount-1 do
+        Writeln(stdout,BackTraceStrFunc(ExceptFrames[i]));
+    end;
+  Writeln(stdout,'');
 end;
 
 procedure DumpStack(var AList: TStrings);
@@ -1120,31 +993,21 @@ var
   i: longint;
 begin
   AList.Add(' Stack trace:');
-  AList.Add('An unhandled exception occurred at $' + HexStr(PtrInt(ExceptAddr), sizeof(PtrInt)*2) + ' :');
+  AList.Add('An unhandled exception occurred at $' + HexStr(PtrInt(ExceptAddr),sizeof(PtrInt)*2) + ' :');
   if ExceptObject is Exception then
   begin
-    lMessage := Exception(ExceptObject).ClassName + ' : ' + Exception(ExceptObject).Message;
+    lMessage := Exception(ExceptObject).ClassName+' : '+Exception(ExceptObject).Message;
     AList.Add(lMessage);
   end
   else
     AList.Add('Exception object ' + ExceptObject.ClassName + ' is not of class Exception.');
   AList.Add(BackTraceStrFunc(ExceptAddr));
-  if (ExceptFrameCount > 0) then
+  if (ExceptFrameCount>0) then
   begin
     for i := 0 to ExceptFrameCount-1 do
       AList.Add(BackTraceStrFunc(ExceptFrames[i]));
   end;
   AList.Add('');
-end;
-
-procedure DebugWrite(const s1: TfpgString);
-var
-  s: string;
-begin
-  if not Assigned(uDebugText) then
-    Exit; //==>
-  s := DupeString(' ', uDebugIndent);
-  write(uDebugText^, s + fpgConvertLineEndings(s1));
 end;
 
 procedure DebugLn(const s1: TfpgString);
@@ -1175,11 +1038,6 @@ end;
 procedure DebugLn(const s1, s2, s3, s4, s5: TfpgString);
 begin
   DebugLn(s1 + ' ' + s2 + ' ' + s3 + ' ' + s4 + ' ' + s5);
-end;
-
-procedure DebugLnFmt(const Msg: string; const Args: array of const);
-begin
-  DebugLn(Format(Msg,Args));
 end;
 
 function DebugMethodEnter(const s1: TfpgString): IInterface;
@@ -1366,7 +1224,7 @@ end;
 function fpgColorToRGB(col: TfpgColor): TfpgColor;
 begin
   if (((col shr 24) and $FF) = $80) and ((col and $FFFFFF) <= $FF) then
-    Result := fpgNamedColors[col and $FF]
+    Result := fpgNamedColors[col and $FF] or (col and $7F000000)// named color keeping alpha
   else
     Result := col;
 end;
@@ -1409,7 +1267,7 @@ begin
       Exit; //==>
     end;
 
-  {$IFDEF GDEBUG}
+  {$IFDEF DEBUG}
   SendDebug('GetNamedFontDesc error: "' + afontid + '" is missing. Default is used.');
   {$ENDIF}
   Result := FPG_DEFAULT_FONT_DESC;
@@ -1458,9 +1316,6 @@ end;
 
 constructor TfpgApplication.Create(const AParams: string);
 begin
-  InitializeDebugOutput;
-  fpgInitMsgQueue;
-
   FFontResList    := TList.Create;
   FDisplayParams  := AParams;
   FScreenWidth    := -1;
@@ -1493,7 +1348,8 @@ begin
   if Assigned(FHintWindow) then
   begin
     HideHint;
-    FreeAndNil(FHintWindow);
+    FHintWindow.Free;
+    FHintWindow := nil;
   end;
   FHintTimer.Enabled := False;
   FHintTimer.OnTimer := nil;
@@ -1570,7 +1426,7 @@ begin
   else
   begin
     fr.Free;
-    {$IFDEF GDEBUG}
+    {$IFDEF DEBUG}
     SendDebug('fpGFX: Error opening font.');
     {$ENDIF}
   end;
@@ -1592,7 +1448,7 @@ begin
   { prevents hint from going off the right screen edge }
   if (APos.X + w) > ScreenWidth then
   begin
-    APos.X := ScreenWidth - w;
+    APos.X:= ScreenWidth - w;
     // just a few more sanity checks
     if APos.X < 0 then
       APos.X := 0;
@@ -1600,7 +1456,7 @@ begin
       w := ScreenWidth;
   end;
   wnd.SetPosition(APos.X, APos.Y, w, h);
-  wnd.UpdatePosition;
+  wnd.UpdateWindowPosition;
   wnd.Show;
 end;
 
@@ -1609,7 +1465,8 @@ begin
   if Assigned(FHintWindow) then
   begin
     HideHint;
-    FreeAndNil(FHintWindow);
+    FHintWindow.Free;
+    FHintWindow := nil;
   end;
   CreateHintWindow;
 end;
@@ -1637,47 +1494,51 @@ end;
 procedure TfpgApplication.SetupLocalizationStrings;
 begin
   // setup internal FPC arrays with localized values
-  ShortDayNames[1] := rsShortSun;
-  ShortDayNames[2] := rsShortMon;
-  ShortDayNames[3] := rsShortTue;
-  ShortDayNames[4] := rsShortWed;
-  ShortDayNames[5] := rsShortThu;
-  ShortDayNames[6] := rsShortFri;
-  ShortDayNames[7] := rsShortSat;
+  { 1250122 [OZZ] Revised to avoid Deprecated Warnings! }  
+DefaultFormatSettings.ShortDayNames[1] := rsShortSun;
+DefaultFormatSettings.ShortDayNames[2] := rsShortMon;
+DefaultFormatSettings.ShortDayNames[3] := rsShortTue;
+DefaultFormatSettings.ShortDayNames[4] := rsShortWed;
+DefaultFormatSettings.ShortDayNames[5] := rsShortThu;
+DefaultFormatSettings.ShortDayNames[6] := rsShortFri;
+DefaultFormatSettings.ShortDayNames[7] := rsShortSat;
 
-  LongDayNames[1] := rsLongSun;
-  LongDayNames[2] := rsLongMon;
-  LongDayNames[3] := rsLongTue;
-  LongDayNames[4] := rsLongWed;
-  LongDayNames[5] := rsLongThu;
-  LongDayNames[6] := rsLongFri;
-  LongDayNames[7] := rsLongSat;
 
-  ShortMonthNames[1] := rsShortJan;
-  ShortMonthNames[2] := rsShortFeb;
-  ShortMonthNames[3] := rsShortMar;
-  ShortMonthNames[4] := rsShortApr;
-  ShortMonthNames[5] := rsShortMay;
-  ShortMonthNames[6] := rsShortJun;
-  ShortMonthNames[7] := rsShortJul;
-  ShortMonthNames[8] := rsShortAug;
-  ShortMonthNames[9] := rsShortSep;
-  ShortMonthNames[10] := rsShortOct;
-  ShortMonthNames[11] := rsShortNov;
-  ShortMonthNames[12] := rsShortDec;
+DefaultFormatSettings.LongDayNames[1] := rsLongSun;
+DefaultFormatSettings.LongDayNames[2] := rsLongMon;
+DefaultFormatSettings.LongDayNames[3] := rsLongTue;
+DefaultFormatSettings.LongDayNames[4] := rsLongWed;
+DefaultFormatSettings.LongDayNames[5] := rsLongThu;
+DefaultFormatSettings.LongDayNames[6] := rsLongFri;
+DefaultFormatSettings.LongDayNames[7] := rsLongSat;
 
-  LongMonthNames[1] := rsLongJan;
-  LongMonthNames[2] := rsLongFeb;
-  LongMonthNames[3] := rsLongMar;
-  LongMonthNames[4] := rsLongApr;
-  LongMonthNames[5] := rsLongMay;
-  LongMonthNames[6] := rsLongJun;
-  LongMonthNames[7] := rsLongJul;
-  LongMonthNames[8] := rsLongAug;
-  LongMonthNames[9] := rsLongSep;
-  LongMonthNames[10] := rsLongOct;
-  LongMonthNames[11] := rsLongNov;
-  LongMonthNames[12] := rsLongDec;
+
+DefaultFormatSettings.ShortMonthNames[1] := rsShortJan;
+DefaultFormatSettings.ShortMonthNames[2] := rsShortFeb;
+DefaultFormatSettings.ShortMonthNames[3] := rsShortMar;
+DefaultFormatSettings.ShortMonthNames[4] := rsShortApr;
+DefaultFormatSettings.ShortMonthNames[5] := rsShortMay;
+DefaultFormatSettings.ShortMonthNames[6] := rsShortJun;
+DefaultFormatSettings.ShortMonthNames[7] := rsShortJul;
+DefaultFormatSettings.ShortMonthNames[8] := rsShortAug;
+DefaultFormatSettings.ShortMonthNames[9] := rsShortSep;
+DefaultFormatSettings.ShortMonthNames[10] := rsShortOct;
+DefaultFormatSettings.ShortMonthNames[11] := rsShortNov;
+DefaultFormatSettings.ShortMonthNames[12] := rsShortDec;
+
+
+DefaultFormatSettings.LongMonthNames[1] := rsLongJan;
+DefaultFormatSettings.LongMonthNames[2] := rsLongFeb;
+DefaultFormatSettings.LongMonthNames[3] := rsLongMar;
+DefaultFormatSettings.LongMonthNames[4] := rsLongApr;
+DefaultFormatSettings.LongMonthNames[5] := rsLongMay;
+DefaultFormatSettings.LongMonthNames[6] := rsLongJun;
+DefaultFormatSettings.LongMonthNames[7] := rsLongJul;
+DefaultFormatSettings.LongMonthNames[8] := rsLongAug;
+DefaultFormatSettings.LongMonthNames[9] := rsLongSep;
+DefaultFormatSettings.LongMonthNames[10] := rsLongOct;
+DefaultFormatSettings.LongMonthNames[11] := rsLongNov;
+DefaultFormatSettings.LongMonthNames[12] := rsLongDec;
 
   SetLength(TrueBoolStrs,1);
   SetLength(FalseBoolStrs,1);
@@ -1723,14 +1584,14 @@ begin
   begin
     { MouseEnter occured }
     FHintTimer.Enabled := Boolean(msg.Params.user.Param1);
-    FHintWidget := TfpgWidget(msg.Sender);
+    FHintWidget := TfpgWindow(msg.Sender);
   end
   else
   begin
     { Handle mouse move information }
     FHintPos.X := msg.Params.user.Param2;
     FHintPos.Y := msg.Params.user.Param3;
-    FHintWidget := TfpgWidget(msg.Sender);
+    FHintWidget := TfpgWindow(msg.Sender);
     if FHintTimer.Enabled then
       FHintTimer.Reset    // keep reseting to prevent hint from showing
     else
@@ -1754,13 +1615,12 @@ var
 begin
   w := nil;
   w := TfpgWidget(FHintWidget);
-  lHint := '';
   try
     if Assigned(w) then
     begin
 //writeln('fpgApplication.HintTimerFired w = ', w.ClassName, ' - ', w.Name);
       TWidgetFriend(w).DoShowHint(lHint);
-      ActivateHint(w.WidgetToScreen(w, FHintPos), lHint);
+      ActivateHint(w.WindowToScreen(w, FHintPos), lHint);
     end;
   except
     // silence it!
@@ -1799,16 +1659,13 @@ begin
 end;
 
 procedure TfpgApplication.InternalInit;
-var
-  cmd: ICmdLineParams;
 begin
   fpgInitTimers;
   fpgNamedFonts := TList.Create;
 
   { If the end-user passed in a style, try and create an instance of it }
-  if Supports(self, ICmdLineParams, cmd) then
-    if cmd.HasOption('style') then
-      fpgStyleManager.SetStyle(cmd.GetOptionValue('style'));
+  if gCommandLineParams.IsParam('style') then
+    fpgStyleManager.SetStyle(gCommandLineParams.GetParam('style'));
   fpgStyle := fpgStyleManager.Style;
 
   fpgCaret      := TfpgCaret.Create;
@@ -1895,7 +1752,7 @@ end;
 
 procedure TfpgApplication.HideHint;
 begin
-  {$IFDEF GDEBUG}
+  {$IFDEF DEBUG}
   SendDebug('HideHint');
   {$ENDIF}
   FHintTimer.Enabled := False;
@@ -1906,20 +1763,6 @@ end;
 procedure TfpgApplication.ShowException(E: Exception);
 begin
   TfpgMessageDialog.Critical(rsErrUnexpected, E.Message);
-end;
-
-procedure TfpgApplication.ShowBacktrace(sender: TObject; E: Exception);
-var
-  m: string;
-  i: Integer;
-  frames: PPointer;
-begin
-  m:='Backtrace:'#10;
-  m+='   * '+BackTraceStrFunc(ExceptAddr)+#10;
-  frames:=ExceptFrames;
-  for i:=0 to ExceptFrameCount-1 do m+='   * '+BackTraceStrFunc(frames[i])+#10;
-  fpgClipboard.text:=m;
-  TfpgMessageDialog.Critical('Exception '+E.ClassName+': '+E.message, m);
 end;
 
 procedure TfpgApplication.WaitWindowMessage(atimeoutms: integer);
@@ -2019,11 +1862,15 @@ begin
   end;
 end;
 
-constructor TfpgCanvas.Create(awidget: TfpgWidgetBase);
+constructor TfpgCanvas.Create(awin: TfpgWindowBase);
 begin
-  inherited Create(awidget);
+  inherited Create(awin);
 
   FBeginDrawCount := 0;
+
+  // options
+  FBufferedDraw        := True; // transparent widgets must turn this off
+  FPersistentResources := False;
 end;
 
 destructor TfpgCanvas.Destroy;
@@ -2147,31 +1994,63 @@ begin
   Result := DrawText(r.Left, r.Top, r.Width, r.Height, AText, AFlags, ALineSpace);
 end;
 
-{ TfpgNativeWindow }
+{ TfpgWindow }
 
-constructor TfpgNativeWindow.Create(AOwner: TComponent);
+function TfpgWindow.CreateCanvas: TfpgCanvasBase;
+begin
+  Result := DefaultCanvasClass.Create(self);
+end;
+
+constructor TfpgWindow.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner); // initialize the platform internals
+
+  FTop    := 0;
+  FLeft   := 0;
+  FWidth  := 16;
+  FHeight := 16;
+  FPrevWidth  := FWidth;
+  FPrevHeight := FHeight;
+
+  FMinWidth  := 2;
+  FMinHeight := 2;
 
   FModalForWin := nil;
 
   if not (FWindowType in [wtModalForm, wtPopup]) then
   begin
-    if (AOwner <> nil) and (AOwner is TfpgNativeWindow) then
+    if (AOwner <> nil) and (AOwner is TfpgWindow) then
       FWindowType   := wtChild
     else
       FWindowType   := wtWindow;
   end;
+
+  FCanvas := CreateCanvas;
 end;
+
+destructor TfpgWindow.Destroy;
+begin
+  FCanvas.Free;
+  inherited Destroy;
+end;
+
+procedure TfpgWindow.SetParent(const AValue: TfpgWindow);
+begin
+  inherited SetParent(AValue);
+end;
+
+function TfpgWindow.GetParent: TfpgWindow;
+begin
+  result := TfpgWindow(inherited GetParent);
+end;
+
+function TfpgWindow.GetCanvas: TfpgCanvas;
+begin
+  Result := TfpgCanvas(inherited GetCanvas);
+end;
+
 
 { TfpgStyle }
-
-procedure TfpgStyle.SetMenuHeaderFont(AValue: TfpgFont);
-begin
-  if FMenuHeaderFont=AValue then Exit;
-  FMenuHeaderFont.Free;
-  FMenuHeaderFont:=AValue;
-end;
 
 procedure TfpgStyle.SetDefaultFont(AValue: TfpgFont);
 begin
@@ -2208,13 +2087,6 @@ begin
   FMenuFont := AValue;
 end;
 
-procedure TfpgStyle.SetTabFont(AValue: TfpgFont);
-begin
-  if FTabFont = AValue then Exit;
-  FTabFont.Free;
-  FTabFont := AValue;
-end;
-
 constructor TfpgStyle.Create;
 begin
   // Setup font aliases
@@ -2226,7 +2098,6 @@ begin
   fpgSetNamedFont('Grid', FPG_DEFAULT_SANS + '-9');
   fpgSetNamedFont('GridHeader', FPG_DEFAULT_SANS + '-9:bold');
   fpgSetNamedFont('Menu', FPG_DEFAULT_FONT_DESC);
-  fpgSetNamedFont('MenuHeader', FPG_DEFAULT_FONT_DESC+':bold');
   fpgSetNamedFont('MenuAccel', FPG_DEFAULT_FONT_DESC + ':underline');
   fpgSetNamedFont('MenuDisabled', FPG_DEFAULT_FONT_DESC);
 
@@ -2265,7 +2136,6 @@ begin
   fpgSetNamedColor(clGridInactiveSelText, $FF000000);     // same as clInactiveSelText
   fpgSetNamedColor(clSplitterGrabBar, $FF839EFE);         // pale blue
   fpgSetNamedColor(clHyperLink, clBlue);
-  fpgSetNamedColor(clPlaceholderText, $FF848284);         // Same as clShadow1
 
 
   // Global Font Objects
@@ -2273,9 +2143,7 @@ begin
   FFixedFont        := fpgGetFont(fpgGetNamedFontDesc('Edit2'));
   FMenuFont         := fpgGetFont(fpgGetNamedFontDesc('Menu'));
   FMenuAccelFont    := fpgGetFont(fpgGetNamedFontDesc('MenuAccel'));
-  FMenuHeaderFont   := fpgGetFont(fpgGetNamedFontDesc('MenuHeader'));
   FMenuDisabledFont := fpgGetFont(fpgGetNamedFontDesc('MenuDisabled'));
-  FTabFont          := fpgGetFont(fpgGetNamedFontdesc('Label1'));
 end;
 
 destructor TfpgStyle.Destroy;
@@ -2285,8 +2153,6 @@ begin
   FMenuFont.Free;
   FMenuAccelFont.Free;
   FMenuDisabledFont.Free;
-  FTabFont.Free;
-  FMenuHeaderFont.Free;
   inherited Destroy;
 end;
 
@@ -2646,12 +2512,6 @@ begin
   ACanvas.FillRectangle(r);
 end;
 
-procedure TfpgStyle.DrawPlaceholderText(ACanvas: TfpgCanvas; const r: TfpgRect; constref AText: TfpgString);
-begin
-  ACanvas.SetTextColor(clPlaceholderText);
-  ACanvas.DrawText(r, AText, [txtLeft, txtVCenter]);
-end;
-
 procedure TfpgStyle.DrawStaticComboBox(ACanvas: TfpgCanvas; r: TfpgRect;
     const IsEnabled: Boolean; const IsFocused: Boolean; const IsReadOnly: Boolean;
     const ABackgroundColor: TfpgColor; const AInternalBtnRect: TfpgRect;
@@ -2729,158 +2589,6 @@ begin
   ACanvas.DrawImagePart(x, y, img, ix, iy, size, size);
 end;
 
-function TfpgStyle.GetTabBorders: TRect;
-begin
-  Result := Rect(2, 2, 2, 2);
-end;
-
-function TfpgStyle.GetDefaultTabHeight: TfpgCoord;
-begin
-  Result := 21;
-end;
-
-procedure TfpgStyle.DrawTabBackground(ACanvas: TfpgCanvas; ABGColor: TfpgColor);
-begin
-  ACanvas.Clear(ABGColor);
-end;
-
-procedure TfpgStyle.DrawPageControlTab(ACanvas: TfpgCanvas; AParams: TfpgStyleDrawTab);
-var
-  r: TfpgRect;
-
-  procedure ApplyCorrectTabColorToCanvas;
-  begin
-    if TfpgTabSheet(AParams.TabSheet).PageControl.ActiveTabColor = clDefault then
-      ACanvas.SetColor(TfpgTabSheet(AParams.TabSheet).TabColor)
-    else
-      ACanvas.SetColor(TfpgTabSheet(AParams.TabSheet).PageControl.ActiveTabColor);
-  end;
-
-begin
-  r := AParams.TabRect;
-
-  if AParams.IsSelected then
-    ApplyCorrectTabColorToCanvas
-  else
-    ACanvas.SetColor(TfpgTabSheet(AParams.TabSheet).TabColor);
-
-  case AParams.TabPosition of
-    tpTop:
-      begin
-        with ACanvas do
-        begin
-          FillRectangle(r.Left+1, r.Top+1, r.Width-3, r.Height-2);     // fill tab background
-          SetColor(clHilite2);
-          DrawLine(r.Left, r.Bottom-2 , r.Left, r.Top+2);        // left edge
-          DrawLine(r.Left, r.Top+2 , r.Left+2, r.Top);           // left rounder edge
-          DrawLine(r.Left+2,  r.Top, r.Right-1, r.Top);          // top edge
-          SetColor(clShadow1);
-          DrawLine(r.Right-1, r.Top+1, r.Right-1, r.Bottom-1);   // right inner edge
-          SetColor(clShadow2);
-          DrawLine(r.Right-1, r.Top+1, r.Right, r.Top+2);        // right rounded edge (1px)
-          DrawLine(r.Right, r.Top+2, r.Right, r.Bottom-1);       // right outer edge
-        end;
-      end;
-
-    tpBottom:
-      begin
-        with ACanvas do
-        begin
-          FillRectangle(r.Left, r.Top, r.Width-1, r.Height-2);   // fill tab background
-          SetColor(clHilite2);
-          DrawLine(r.Left, r.Top, r.Left, r.Bottom-1);           // left edge
-          SetColor(clShadow2);
-          DrawLine(r.Left+2,  r.Bottom, r.Right-1, r.Bottom);    // bottom outer edge
-          SetColor(clShadow1);
-          DrawLine(r.Right-1, r.Bottom-1, r.Right-1, r.Top-1);   // right inner edge
-          DrawLine(r.Left+1,  r.Bottom-1, r.Right-1, r.Bottom-1);// bottom inner edge
-          SetColor(clShadow2);
-          DrawLine(r.Right-1, r.Bottom-1, r.Right, r.Bottom-2);  // right rounded edge (1px)
-          DrawLine(r.Right, r.Bottom-2, r.Right, r.Top-1);       // right outer edge
-          if AParams.IsSelected then
-          begin
-            ApplyCorrectTabColorToCanvas;
-            DrawLine(r.Left+1, r.Top-1, r.Right-1, r.Top-1);
-          end;
-        end;
-      end;
-
-    tpLeft:
-      begin
-        if AParams.IsSelected then
-        begin
-          r.Width  := r.Width - 1;
-          r.Height := r.Height + 2;
-        end;
-
-        with ACanvas do
-        begin
-          FillRectangle(r.Left+1, r.Top+1, r.Width-2, r.Height-3);
-          SetColor(clHilite2);
-          DrawLine(r.Left, r.Bottom-2, r.Left, r.Top+2);
-          DrawLine(r.Left, r.Top+2, r.Left+2, r.Top);
-          DrawLine(r.Left+2, r.Top, r.Right-1, r.Top);
-          SetColor(clShadow1);
-          DrawLine(r.Left+2, r.Bottom-1, r.Right-1, r.Bottom-1);
-          SetColor(clShadow2);
-          DrawLine(r.Left+1, r.Bottom-1, r.Left+3, r.Bottom);
-          DrawLine(r.Left+2, r.Bottom, r.Right, r.Bottom);
-        end;
-      end;
-
-    tpRight:
-      begin
-        if AParams.IsSelected then
-          r.Height := r.Height + 2;
-
-        with ACanvas do
-        begin
-          FillRectangle(r.Left+1, r.Top+1, r.Width-2, r.Height-3);
-          SetColor(clHilite2);
-          DrawLine(r.Left+1, r.Top, r.Right-2, r.Top);
-          SetColor(clShadow1);
-          DrawLine(r.Right-2,r.Top,r.Right-1,r.Top+1);
-          DrawLine(r.Left+2, r.Bottom-1, r.Right-2, r.Bottom-1);
-          DrawLine(r.Right-3, r.Bottom-1, r.Right-1, r.Bottom-3);
-          DrawLine(r.Right-1, r.Bottom-3, r.Right-1, r.Top);
-          SetColor(clShadow2);
-          DrawLine(r.Left+2,r.Bottom,r.Right-3, r.Bottom);
-          DrawLine(r.Right-3, r.Bottom, r.Right, r.Bottom-3);
-          DrawLine(r.Right, r.Top+2, r.Right, r.Bottom-2);
-        end;
-      end;
-  end;  { case }
-end;
-
-procedure TfpgStyle.DrawListBox(ACanvas: TfpgCanvas; const r: TfpgRect; const IsEnabled: Boolean;
-  const IsReadOnly: Boolean; const ABackgroundColor: TfpgColor);
-begin
-  if IsEnabled and not IsReadOnly then
-    ACanvas.SetColor(ABackgroundColor)
-  else
-    ACanvas.SetColor(clWindowBackground);
-  ACanvas.FillRectangle(r);
-end;
-
-procedure TfpgStyle.DrawListBoxItem(ACanvas: TfpgCanvas; r: TfpgRect; const IsFocusedItem: Boolean;
-  const HasFocus: Boolean);
-begin
-  if IsFocusedItem then
-  begin
-    if HasFocus then
-    begin
-      ACanvas.SetColor(clSelection);
-      ACanvas.SetTextColor(clSelectionText);
-    end
-    else
-    begin
-      ACanvas.SetColor(clInactiveSel);
-      ACanvas.SetTextColor(clInactiveSelText);
-    end;
-    ACanvas.FillRectangle(r);
-  end;
-end;
-
 
 { TfpgCaret }
 
@@ -2943,7 +2651,7 @@ begin
 
   // we could not be sure about the buffer contents!
   try
-    FCanvas.BeginDraw;
+    FCanvas.BeginDraw(False);
     try
       // this works well on narrow characters like 'i' or 'l' in non-mono fonts
       FCanvas.XORFillRectangle($FFFFFF, FLeft, FTop, FWidth, FHeight);
@@ -2954,23 +2662,10 @@ begin
   except
     {$Note This occurs every now and again with TfpgMemo and CaretInvert painting! }
     // Investigate this.
-    {$IFDEF GDEBUG}
+    {$IFDEF DEBUG}
     SendDebug('TfpgCaret.InvertCaret cause an exception');
     {$ENDIF}
   end;
-end;
-
-procedure TfpgCaret.ResetTimeout;
-begin
-  if FVisible and FTimer.Enabled then
-  begin
-    FTimer.Reset;
-  end;
-end;
-
-function TfpgCaret.IsVisible(acanvas: TfpgCanvas): Boolean;
-begin
-  Result := FVisible and (FCanvas = acanvas);
 end;
 
 { TfpgImages }
@@ -3159,37 +2854,15 @@ begin
   FMimeData := AValue;
 end;
 
-procedure TfpgDrag.MsgMouseMove(var msg: TfpgMessageRec);
-var
-  FOffset: TfpgPoint;
+function TfpgDrag.GetSource: TfpgWindow;
 begin
-  if TfpgDNDWindow(FPreviewWin).Visible then
-  begin
-    FOffset := TWidgetFriend(Source).FDragStartPos;
-
-    FPreviewWin.MoveWidget(msg.Params.mouse.x-FOffset.X, msg.Params.mouse.y-FOffset.Y);
-  end;
+  Result := TfpgWindow(inherited GetSource);
 end;
 
-
-procedure TfpgDrag.DoOnPaintPreview(ACanvas: TfpgCanvas);
+constructor TfpgDrag.Create(ASource: TfpgWindow);
 begin
-  if Assigned(FOnPaintPreview) then
-    FOnPaintPreview(Self, ACanvas);
-end;
-
-
-constructor TfpgDrag.Create(ASource: TfpgWidgetBase);
-begin
-  inherited Create(ASource);
+  inherited Create;
   FSource := ASource;
-  FPreviewWin := TfpgDNDWindow.Create(nil, Self);
-end;
-
-destructor TfpgDrag.Destroy;
-begin
-  FPreviewWin.Free;
-  inherited Destroy;
 end;
 
 function TfpgDrag.Execute(const ADropActions: TfpgDropActions;
@@ -3202,12 +2875,8 @@ begin
     raise Exception.Create(ClassName + ': No Source window was specified before starting the drag');
   if ADropActions = [] then
     raise Exception.Create(ClassName + ': No Drop Action was specified');
-  if Assigned(FOnPaintPreview) or TfpgDNDWindow(FPreviewWin).HasWidgetChildren then
-    TfpgDNDWindow(FPreviewWin).Show(FPreviewSize);
   Result := inherited Execute(ADropActions, ADefaultAction);
 end;
-
-
 
 initialization
   uApplication    := nil;
@@ -3217,17 +2886,13 @@ initialization
   fpgCaret        := nil;
   fpgImages       := nil;
   iCallTrace      := -1;
-
+  InitializeDebugOutput;
+  fpgInitMsgQueue;
 {$ifdef AGGCanvas}
   DefaultCanvasClass := TAgg2D;
 {$else}
   DefaultCanvasClass := TfpgCanvas;
 {$endif}
-  {$IF FPC_FULLVERSION >= 30000}
-  // This switches RTL, FCL and String data type to UTF-8. Many of fpg_utils functions will not be needed any more.
-  DefaultSystemCodePage := CP_UTF8;
-  SetMultiByteRTLFileSystemCodePage(CP_UTF8);
-  {$IFEND}
 
 finalization
   uClipboard.Free;
